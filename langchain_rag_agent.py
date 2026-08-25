@@ -115,15 +115,15 @@ chunk_analyst_subagent = {
     "system_prompt": CHUNK_ANALYST_INSTRUCTIONS,
 }
 
-rate_limiter = InMemoryRateLimiter(
-    requests_per_second=0.065,
-    check_every_n_seconds=0.1,
-    max_bucket_size=4.0
-)
+# rate_limiter = InMemoryRateLimiter(
+#     requests_per_second=0.065,
+#     check_every_n_seconds=0.1,
+#     max_bucket_size=4.0
+# )
 
 model = init_chat_model(
-    model="google_genai:gemini-3.6-flash",
-    rate_limiter=rate_limiter
+    model="google_genai:gemini-3.5-flash-lite",
+    # rate_limiter=rate_limiter
 )
 
 agent = create_deep_agent(
@@ -134,7 +134,7 @@ agent = create_deep_agent(
     subagents=[chunk_analyst_subagent] 
 )
 
-EXAMPLE_QUERY = "How do I stream intermediate tool results from a subagent?"
+EXAMPLE_QUERY = "What are some special traits of Capybaras?"
 
 if __name__ == "__main__":
     result = agent.invoke(
