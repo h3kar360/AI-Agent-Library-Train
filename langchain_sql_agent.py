@@ -7,6 +7,9 @@ from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from langchain.tools import tool
 from langchain.agents import create_agent
+from langchain.agents.middleware import HumanInTheLoopMiddleware
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
 
 load_dotenv()
 
@@ -164,13 +167,22 @@ Then you should query the schema of the most relevant tables.
 agent = create_agent(
     model,
     tools,
-    system_prompt=system_prompt
+    system_prompt=system_prompt,
+    middleware=[
+        HumanInTheLoopMiddleware(
+            interrupt_on={ "sql_db_query": True },
+            description_prefix="Tool execution pending approval"
+        )
+    ],
+    checkpointer=InMemorySaver()
 )
 
 question = "Which genre on average has the longest tracks?"
+config = {"configurable": {"thread_id": "1"}}
 
 stream = agent.stream_events(
     {"messages": [{"role": "user", "content": question}]},
+    config,
     version="v3",
 )
 
@@ -183,5 +195,26 @@ for kind, item in stream.interleave("messages", "tool_calls"):
         for delta in item.output_deltas:
             print(delta, end="", flush=True)
         print(f"\nTool result: {item.output}")
+
+if stream.interrupted:
+    print("INTERRUPTED:")
+    interrupt = stream.interrupts[0]
+    for request in interrupt.value["action_requests"]:
+        print(request["description"])
+
+    print("\n--- RESUMING EXECUTION WITH APPROVAL ---")
+    
+    resume_stream = agent.stream_events(
+        Command(resume={"decisions": [{"type": "approve"}]}),
+        config,  # Targets thread_id "1" to resume the paused state
+        version="v3",
+    )
+    
+    for kind, item in resume_stream.interleave("messages", "tool_calls"):
+        if kind == "messages":
+            for token in item.text:
+                print(token, end="", flush=True)
+        elif kind == "tool_calls":
+            print(f"\nTool call executed: {item.tool_name}({item.input})")
 
 final_state = stream.output
