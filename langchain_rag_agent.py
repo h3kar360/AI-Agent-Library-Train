@@ -131,7 +131,8 @@ agent = create_deep_agent(
     tools=[search_documentation],
     backend=backend,
     system_prompt=INSTRUCTIONS,
-    subagents=[chunk_analyst_subagent] 
+    subagents=[chunk_analyst_subagent],
+    # response_format=[The response pydantic]
 )
 
 EXAMPLE_QUERY = "What are some special traits of Capybaras?"
@@ -140,6 +141,8 @@ if __name__ == "__main__":
     result = agent.invoke(
         {"messages": [HumanMessage(content=EXAMPLE_QUERY)]}
     )
+
+    # print(result["structured_response"])
 
     for msg in result.get("messages", []):
         if msg.text:
