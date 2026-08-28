@@ -1,6 +1,7 @@
 import pathlib
 import requests
 import sqlite3
+import json
 
 from dotenv import load_dotenv
 from typing import Literal
@@ -8,9 +9,11 @@ from typing import Literal
 from langchain.chat_models import init_chat_model
 from langchain.tools import tool
 from langchain.messages import AIMessage
+from langgraph.types import interrupt, Command
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import START, END, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode
+from langgraph.checkpoint.memory import InMemorySaver
 
 load_dotenv()
 
@@ -129,7 +132,39 @@ get_schema_tool = next(tool for tool in tools if tool.name == "sql_db_schema")
 get_schema_node = ToolNode([get_schema_tool], name="get_schema")
 
 run_query_tool = next(tool for tool in tools if tool.name == "sql_db_query")
-run_query_node = ToolNode([run_query_tool], name="run_query")
+# run_query_node = ToolNode([run_query_tool], name="run_query")
+
+@tool(
+    run_query_tool.name,
+    description=run_query_tool.description,
+    args_schema=run_query_tool.args_schema
+)
+def run_query_tool_with_interrupt(config: RunnableConfig, **tool_input):
+    request = {
+        "action": run_query_tool.name,
+        "args": tool_input,
+        "description": "Please review the tool call",
+    }
+
+    response = interrupt([request])
+
+    # approve the tool call
+    if response["type"] == "accept":
+        tool_response = run_query_tool.invoke(tool_input, config)
+    # update tool call args
+    elif response["type"] == "edit":
+        tool_input = response["args"]["args"]
+        tool_response = run_query_tool.invoke(tool_input, config)
+    # respond to the LLM with user feedback
+    elif response["type"] == "response":
+        user_feedback = response["args"]
+        tool_response = user_feedback
+    else:
+        raise ValueError(f"Unsupported interrupt response type: {response['type']}")
+
+    return tool_response
+
+run_query_node = ToolNode([run_query_tool_with_interrupt], name="run_query")
 
 def list_tables(state: MessagesState):
     tool_call = {
@@ -215,12 +250,19 @@ def check_query(state: MessagesState):
 
     return {"messages": [response]}
 
-def should_continue(state: MessagesState) -> Literal[END, "check_query"]:
+# def should_continue(state: MessagesState) -> Literal[END, "check_query"]:
+#     messages = state["messages"]
+#     last_message = messages[-1]
+#     if not last_message.tool_calls:
+#         return END
+#     return "check_query"
+
+def should_continue(state: MessagesState) -> Literal[END, "run_query"]:
     messages = state["messages"]
     last_message = messages[-1]
     if not last_message.tool_calls:
         return END
-    return "check_query"
+    return "run_query"
 
 builder = StateGraph(MessagesState)
 builder.add_node(list_tables)
@@ -238,24 +280,44 @@ builder.add_conditional_edges(
     "generate_query",
     should_continue
 )
-builder.add_edge("check_query", "run_query")
+# builder.add_edge("check_query", "run_query")
 builder.add_edge("run_query", "generate_query")
 
-agent = builder.compile()
+checkpointer = InMemorySaver()
+agent = builder.compile(checkpointer=checkpointer)
 
 import pathlib
 
 pathlib.Path("graph.png").write_bytes(agent.get_graph().draw_mermaid_png())
 
 question = "Which genre on average has the longest tracks?"
+config = {"configurable": {"thread_id": "1"}}
 
 stream = agent.stream_events(
     {"messages": [{"role": "user", "content": question}]},
+    config,
     version="v3",
 )
 
 for message in stream.messages:
     for token in message.text:
         print(token, end="", flush=True)
+if stream.interrupted:
+    action = stream.interrupts[0]
+    print("INTERUPTED: ")
+    for request in action.value:
+        print(json.dumps(request, indent=2))
+
+    print("=====RESUME=====")
+    stream = agent.stream_events(
+        Command(resume={"type": "accept"}),
+        # Command(resume={"type": "edit", "args": {"query": "..."}}),
+        config,
+        version="v3",
+    )
+    for message in stream.messages:
+        for token in message.text:
+            print(token, end="", flush=True)
+
 
 final_state = stream.output
